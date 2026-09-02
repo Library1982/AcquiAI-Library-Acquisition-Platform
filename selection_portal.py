@@ -6,19 +6,22 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import or_, func
 from urllib.parse import urlencode
+from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
 from database import SessionLocal
 from models import Book, Selector, SelectionCart, SelectionItem
 
 import io
+import re
+import zipfile
 import pandas as pd
 
 load_dotenv()
 
 app = FastAPI(
     title="AcquiAI",
-    version="4.1.1",
+    version="4.2.2",
 )
 
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "acquiai-local-development-secret")
@@ -735,6 +738,7 @@ TEXT = {
         "all_publishers": "All Publishers",
         "all_languages": "All Languages",
         "all_subjects": "All Subjects",
+        "all_years": "All Publication Years",
         "search": "Search",
         "total_catalogue": "Total Catalogue",
         "showing": "Showing",
@@ -790,6 +794,36 @@ TEXT = {
         "aggregated_demand": "Aggregated Book Demand",
         "aggregated_help": "Each title appears once. Requested By counts unique users.",
         "export_final": "Export Final Approved Excel",
+        "generate_publisher_orders": "Generate Publisher Orders ZIP",
+        "publisher_orders_help": "Creates one separate Excel order file for each publisher/vendor.",
+        "new_cycle": "New Selection Cycle",
+        "new_cycle_help": "Clear all current submitted carts, user selections and admin decisions while keeping the catalogue and Supabase user accounts.",
+        "reset_cycle": "Start New Selection Cycle",
+        "cycle_warning": "This will permanently clear all current selections, submitted carts and admin decisions. The catalogue and Supabase user accounts will NOT be deleted. Continue?",
+        "cycle_reset_done": "New selection cycle started successfully.",
+        "upload_master": "Upload Publisher / Vendor Files",
+        "upload_master_help": "Select multiple publisher/vendor Excel files. AcquiAI combines them into one standardized master catalogue and publishes it to users.",
+        "choose_master": "Choose Publisher / Vendor Excel Files",
+        "publish_master": "Generate & Publish Master Catalogue",
+        "master_warning": "AcquiAI will combine these publisher files into a new master catalogue and clear the current selection cycle. Continue?",
+        "master_import_done": "New master catalogue published successfully.",
+        "records_imported": "records imported",
+        "files_processed": "Publisher Files Processed",
+        "source_rows": "Source Rows",
+        "unique_titles": "Unique Titles",
+        "duplicates_removed": "Duplicates Consolidated",
+        "skipped_files": "Skipped / Ignored Sheets",
+        "download_generated_master": "Download Generated Master",
+        "published_to_users": "Catalogue is now published to the Selection Portal.",
+        "mapping_fixed": "Arabic/English mapping uses automatic header-row detection, safe field matching and validation.",
+        "master_upload_error": "Unable to import the master catalogue.",
+        "select_all_pending": "Select All Pending",
+        "clear_selected": "Clear Selected",
+        "approve_selected": "Approve Selected",
+        "reject_selected": "Reject Selected",
+        "bulk_default_qty": "Default Final Qty",
+        "select_books_first": "Please select at least one title.",
+        "selected_titles": "Selected Titles",
         "requested_by": "Requested By",
         "total_requests": "Total Requests",
         "admin_decision": "Admin Decision / Final Qty",
@@ -836,6 +870,7 @@ TEXT = {
         "all_publishers": "جميع الناشرين",
         "all_languages": "جميع اللغات",
         "all_subjects": "جميع الموضوعات",
+        "all_years": "جميع سنوات النشر",
         "search": "بحث",
         "total_catalogue": "إجمالي العناوين",
         "showing": "المعروض",
@@ -891,6 +926,36 @@ TEXT = {
         "aggregated_demand": "الطلب المجمع على الكتب",
         "aggregated_help": "يظهر كل عنوان مرة واحدة ويحسب عدد المستخدمين المختلفين.",
         "export_final": "تصدير الطلب النهائي إلى Excel",
+        "generate_publisher_orders": "إنشاء ملف ZIP لأوامر الناشرين",
+        "publisher_orders_help": "ينشئ ملف Excel منفصلاً لكل ناشر أو مورد.",
+        "new_cycle": "دورة اختيار جديدة",
+        "new_cycle_help": "حذف جميع السلال والاختيارات الحالية وقرارات المسؤول مع الاحتفاظ بالفهرس وحسابات المستخدمين في Supabase.",
+        "reset_cycle": "بدء دورة اختيار جديدة",
+        "cycle_warning": "سيتم حذف جميع الاختيارات والسلال الحالية وقرارات المسؤول نهائياً. لن يتم حذف الفهرس أو حسابات المستخدمين في Supabase. هل تريد المتابعة؟",
+        "cycle_reset_done": "تم بدء دورة اختيار جديدة بنجاح.",
+        "upload_master": "رفع ملفات الناشرين / الموردين",
+        "upload_master_help": "اختر عدة ملفات Excel للناشرين أو الموردين. سيقوم AcquiAI بدمجها وتوحيدها في فهرس رئيسي واحد ثم نشره للمستخدمين.",
+        "choose_master": "اختر ملفات Excel للناشرين / الموردين",
+        "publish_master": "إنشاء ونشر الفهرس الرئيسي",
+        "master_warning": "سيقوم AcquiAI بدمج ملفات الناشرين في فهرس رئيسي جديد ومسح دورة الاختيار الحالية. هل تريد المتابعة؟",
+        "master_import_done": "تم نشر الفهرس الرئيسي الجديد بنجاح.",
+        "records_imported": "سجلاً تم استيراده",
+        "files_processed": "ملفات الناشرين التي تمت معالجتها",
+        "source_rows": "صفوف المصدر",
+        "unique_titles": "العناوين الفريدة",
+        "duplicates_removed": "التكرارات التي تم دمجها",
+        "skipped_files": "الأوراق / الملفات المتجاهلة",
+        "download_generated_master": "تنزيل الفهرس الرئيسي المُنشأ",
+        "published_to_users": "تم نشر الفهرس الآن في بوابة الاختيار.",
+        "mapping_fixed": "تستخدم مطابقة العربية/الإنجليزية اكتشاف صف العناوين تلقائياً والمطابقة الآمنة والتحقق من البيانات.",
+        "master_upload_error": "تعذر استيراد الفهرس الرئيسي.",
+        "select_all_pending": "تحديد جميع الطلبات قيد المراجعة",
+        "clear_selected": "مسح التحديد",
+        "approve_selected": "اعتماد المحدد",
+        "reject_selected": "رفض المحدد",
+        "bulk_default_qty": "الكمية النهائية الافتراضية",
+        "select_books_first": "يرجى تحديد عنوان واحد على الأقل.",
+        "selected_titles": "العناوين المختارة",
         "requested_by": "عدد الطالبين",
         "total_requests": "إجمالي الطلبات",
         "admin_decision": "قرار المسؤول / الكمية النهائية",
@@ -941,6 +1006,295 @@ def esc(value):
         .replace("'", "&#39;")
     )
 
+
+def normalize_colname(value):
+    """
+    Normalize English AND Arabic column names.
+    v3.3 stripped Arabic letters, turning every Arabic header into the
+    same empty key. That caused one Arabic column to be reused for many
+    unrelated target fields. v3.4 preserves Unicode letters/numbers.
+    """
+    value = str(value or "").strip().lower()
+    value = value.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+    value = value.replace("ى", "ي")
+    value = re.sub(r"[\u064B-\u065F\u0670]", "", value)  # Arabic diacritics
+    value = re.sub(r"[\W_]+", "", value, flags=re.UNICODE)
+    return value
+
+
+def find_column(df, aliases, used_columns=None):
+    used_columns = used_columns or set()
+
+    normalized = {}
+    for col in df.columns:
+        key = normalize_colname(col)
+        if key and key not in normalized:
+            normalized[key] = col
+
+    for alias in aliases:
+        key = normalize_colname(alias)
+        col = normalized.get(key)
+        if col is not None and col not in used_columns:
+            return col
+
+    return None
+
+
+def map_columns_safely(df, aliases):
+    """
+    Map each source column to at most one bibliographic target field.
+    This prevents Subject/Price/ISBN/etc. from all pointing to the same
+    source column.
+    """
+    result = {}
+    used = set()
+
+    priority = [
+        "Title",
+        "Author",
+        "Publisher",
+        "Publication Year",
+        "ISBN",
+        "Price",
+        "Currency",
+        "Subject",
+        "Language",
+        "Vendor",
+    ]
+
+    for standard in priority:
+        col = find_column(df, aliases.get(standard, []), used)
+        result[standard] = col
+        if col is not None:
+            used.add(col)
+
+    return result
+
+
+def valid_year(value):
+    if value in (None, ""):
+        return None
+    match = re.search(r"\b(18|19|20|21)\d{2}\b", str(value))
+    return match.group(0) if match else None
+
+
+def valid_isbn(value):
+    if value in (None, ""):
+        return None
+    raw = str(value).strip()
+    compact = re.sub(r"[^0-9Xx]", "", raw)
+    if len(compact) in (10, 13):
+        return compact.upper()
+    return None
+
+
+def valid_price(value):
+    if value in (None, ""):
+        return None
+    try:
+        cleaned = re.sub(r"[^0-9.\-]", "", str(value).replace(",", ""))
+        if not cleaned:
+            return None
+        number = float(cleaned)
+        # Reject obvious ISBNs, years and absurd values accidentally mapped as price.
+        if number < 0 or number > 100000:
+            return None
+        return number
+    except Exception:
+        return None
+
+
+
+
+
+def is_non_catalogue_sheet(sheet_name):
+    """
+    Identify obvious notes/summary/instruction sheets that should not become
+    catalogue records unless they independently show strong bibliographic headers.
+    """
+    key = normalize_colname(sheet_name)
+    blocked_terms = [
+        "notes", "note", "remarks", "remark", "summary", "summaries",
+        "instructions", "instruction", "readme", "info", "information",
+        "ملاحظات", "ملاحظة", "ملحوظات", "تعليمات", "ارشادات", "إرشادات",
+        "ملخص", "ملخصات", "معلومات", "بيانات", "فهرس",
+    ]
+    return any(normalize_colname(term) in key for term in blocked_terms if normalize_colname(term))
+
+
+def header_alias_score(values, aliases):
+    """Count how many cells in a candidate row look like known bibliographic headers."""
+    normalized_aliases = {
+        normalize_colname(alias)
+        for names in aliases.values()
+        for alias in names
+        if normalize_colname(alias)
+    }
+    score = 0
+    for value in values:
+        key = normalize_colname(value)
+        if key and key in normalized_aliases:
+            score += 1
+    return score
+
+
+def detect_header_row(raw_bytes, sheet_name, engine, aliases, max_rows=15):
+    """
+    Inspect the first rows without assuming where the header is.
+    Returns the row number with the strongest bibliographic-header evidence.
+    """
+    preview = pd.read_excel(
+        io.BytesIO(raw_bytes),
+        sheet_name=sheet_name,
+        engine=engine,
+        dtype=object,
+        header=None,
+        nrows=max_rows,
+    )
+
+    best_row = 0
+    best_score = -1
+
+    for row_no in range(len(preview)):
+        values = preview.iloc[row_no].tolist()
+        score = header_alias_score(values, aliases)
+        if score > best_score:
+            best_score = score
+            best_row = row_no
+
+    return best_row, best_score
+
+
+def infer_columns_from_data(df, current):
+    """
+    Conservative fallback for unusual publisher files.
+    It fills only unmapped fields and never reuses a source column.
+    """
+    result = dict(current)
+    used = {c for c in result.values() if c is not None}
+
+    def sample_values(col, limit=30):
+        vals = []
+        for value in df[col].dropna().head(limit):
+            s = str(value).strip()
+            if s:
+                vals.append(s)
+        return vals
+
+    # ISBN: strong structural signature.
+    if not result.get("ISBN"):
+        best = None
+        best_ratio = 0
+        for col in df.columns:
+            if col in used:
+                continue
+            vals = sample_values(col)
+            if not vals:
+                continue
+            ratio = sum(valid_isbn(v) is not None for v in vals) / len(vals)
+            if ratio >= 0.60 and ratio > best_ratio:
+                best, best_ratio = col, ratio
+        if best is not None:
+            result["ISBN"] = best
+            used.add(best)
+
+    # Publication year: strong 4-digit year signature.
+    if not result.get("Publication Year"):
+        best = None
+        best_ratio = 0
+        for col in df.columns:
+            if col in used:
+                continue
+            vals = sample_values(col)
+            if not vals:
+                continue
+            ratio = sum(valid_year(v) is not None for v in vals) / len(vals)
+            if ratio >= 0.60 and ratio > best_ratio:
+                best, best_ratio = col, ratio
+        if best is not None:
+            result["Publication Year"] = best
+            used.add(best)
+
+    # Price: numeric values in a plausible book-price range, excluding year/ISBN columns.
+    if not result.get("Price"):
+        best = None
+        best_ratio = 0
+        for col in df.columns:
+            if col in used:
+                continue
+            vals = sample_values(col)
+            if not vals:
+                continue
+            plausible = 0
+            for v in vals:
+                p = valid_price(v)
+                if p is not None and 0 < p <= 10000 and valid_year(v) is None and valid_isbn(v) is None:
+                    plausible += 1
+            ratio = plausible / len(vals)
+            if ratio >= 0.70 and ratio > best_ratio:
+                best, best_ratio = col, ratio
+        if best is not None:
+            result["Price"] = best
+            used.add(best)
+
+    return result
+
+
+def choose_title_fallback(df, current):
+    """
+    Last-resort title recovery for a sheet whose title header is unfamiliar.
+    Chooses a text-heavy unused column, but only when evidence is strong.
+    """
+    used = {c for c in current.values() if c is not None}
+    best = None
+    best_score = 0
+
+    for col in df.columns:
+        if col in used:
+            continue
+
+        vals = [str(v).strip() for v in df[col].dropna().head(40) if str(v).strip()]
+        if len(vals) < 2:
+            continue
+
+        text_like = [
+            v for v in vals
+            if valid_year(v) is None
+            and valid_isbn(v) is None
+            and valid_price(v) is None
+            and len(v) >= 4
+        ]
+
+        ratio = len(text_like) / len(vals)
+        avg_len = sum(len(v) for v in text_like) / max(1, len(text_like))
+        score = ratio * min(avg_len, 80)
+
+        if ratio >= 0.70 and avg_len >= 6 and score > best_score:
+            best = col
+            best_score = score
+
+    return best
+
+
+def publisher_from_filename(filename):
+    name = str(filename or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    name = re.sub(r"\.(xlsx|xls)$", "", name, flags=re.I)
+    name = re.sub(r"\s*\(\d+\)\s*$", "", name)
+    name = re.sub(r"\s*[-_ ]*(copy|نسخة)\s*$", "", name, flags=re.I)
+    name = name.replace("_", " ").strip(" -_")
+    return name or "Unknown Publisher"
+
+
+def book_dedupe_key(record):
+    isbn = re.sub(r"[^0-9Xx]", "", str(record.get("ISBN") or ""))
+    if isbn:
+        return ("isbn", isbn.upper())
+
+    title = normalize_colname(record.get("Title"))
+    author = normalize_colname(record.get("Author"))
+    year = normalize_colname(record.get("Publication Year"))
+    publisher = normalize_colname(record.get("Publisher") or record.get("Source Publisher"))
+    return ("meta", title, author, year, publisher)
 
 def build_url(path, lang="en", **params):
     values = {"lang": lang}
@@ -1145,7 +1499,7 @@ header {{
 
 .filters {{
     display: grid;
-    grid-template-columns: 2fr 1fr 1fr 1fr auto;
+    grid-template-columns: 2fr 1fr 1fr 1fr 1fr auto;
     gap: 12px;
 }}
 
@@ -1515,6 +1869,7 @@ def selection_page(
     publisher: str = "",
     language: str = "",
     subject: str = "",
+    publication_year: str = "",
     page: int = 1,
     lang: str = "en",
 ):
@@ -1548,6 +1903,9 @@ def selection_page(
 
         if subject:
             query = query.filter(Book.subject == subject)
+
+        if publication_year:
+            query = query.filter(Book.publication_year == publication_year)
 
         if page < 1:
             page = 1
@@ -1608,6 +1966,18 @@ def selection_page(
             )
         ]
 
+        publication_years = [
+            r[0]
+            for r in (
+                db.query(Book.publication_year)
+                .filter(Book.publication_year.isnot(None))
+                .filter(Book.publication_year != "")
+                .distinct()
+                .order_by(Book.publication_year.desc())
+                .all()
+            )
+        ]
+
         publisher_options = f'<option value="">{esc(t["all_publishers"])}</option>'
         for item in publishers:
             selected = "selected" if item == publisher else ""
@@ -1626,6 +1996,13 @@ def selection_page(
         for item in subjects:
             selected = "selected" if item == subject else ""
             subject_options += (
+                f'<option value="{esc(item)}" {selected}>{esc(item)}</option>'
+            )
+
+        year_options = f'<option value="">{esc(t["all_years"])}</option>'
+        for item in publication_years:
+            selected = "selected" if str(item) == publication_year else ""
+            year_options += (
                 f'<option value="{esc(item)}" {selected}>{esc(item)}</option>'
             )
 
@@ -1678,6 +2055,7 @@ def selection_page(
             "publisher": publisher,
             "language": language,
             "subject": subject,
+            "publication_year": publication_year,
         }
 
         base_params = {
@@ -1778,6 +2156,10 @@ def selection_page(
 
 <select name="subject">
 {subject_options}
+</select>
+
+<select name="publication_year">
+{year_options}
 </select>
 
 <button class="primary" type="submit">
@@ -2218,11 +2600,21 @@ def admin_dashboard(
         for cart in carts:
             selector = cart.selector
 
-            book_count = (
+            cart_items = (
                 db.query(SelectionItem)
                 .filter(SelectionItem.cart_id == cart.id)
-                .count()
+                .all()
             )
+            book_count = len(cart_items)
+            selected_titles = []
+            for cart_item in cart_items:
+                book = db.query(Book).filter(Book.id == cart_item.book_id).first()
+                if book and book.title:
+                    selected_titles.append(book.title)
+            selected_titles_html = "<br>".join(
+                f"{index + 1}. {esc(title)}"
+                for index, title in enumerate(selected_titles)
+            ) or "—"
 
             submitted = (
                 cart.submitted_at.strftime("%d/%m/%Y %H:%M")
@@ -2237,7 +2629,8 @@ def admin_dashboard(
 <td>{esc(selector.user_id if selector else "")}</td>
 <td>{esc(selector.department if selector else "")}</td>
 <td>{esc(selector.email if selector else "")}</td>
-<td>{book_count}</td>
+<td><strong>{book_count}</strong></td>
+<td style="min-width:280px;line-height:1.6">{selected_titles_html}</td>
 <td>{esc(submitted)}</td>
 <td>{esc(cart.status)}</td>
 </tr>
@@ -2246,7 +2639,7 @@ def admin_dashboard(
         if not cart_rows:
             cart_rows = f"""
 <tr>
-<td colspan="8">{esc(t["no_carts"])}</td>
+<td colspan="9">{esc(t["no_carts"])}</td>
 </tr>
 """
 
@@ -2354,6 +2747,10 @@ def admin_dashboard(
             demand_rows += f"""
 <tr>
 
+<td>
+<input type="checkbox" class="bulk-book" name="book_ids" value="{row.book_id}" data-status="{status_value}" form="bulkDecisionForm">
+</td>
+
 <td class="title {title_class}">
 {esc(row.title)}
 </td>
@@ -2422,7 +2819,7 @@ def admin_dashboard(
         if not demand_rows:
             demand_rows = f"""
 <tr>
-<td colspan="8">{esc(t["no_demand"])}</td>
+<td colspan="9">{esc(t["no_demand"])}</td>
 </tr>
 """
 
@@ -2512,11 +2909,39 @@ def admin_dashboard(
 """
 
         export_url = build_url("/admin/export-final", lang)
+        publisher_orders_url = build_url("/admin/export-publisher-orders", lang)
 
         content = f"""
 <div class="hero">
 <h1>{esc(t["admin_title"])}</h1>
 <p>{esc(t["admin_subtitle"])}</p>
+</div>
+
+<div class="card">
+<h2 style="margin:0 0 5px;">{esc(t["upload_master"])}</h2>
+<div class="small" style="margin:0 0 14px;">{esc(t["upload_master_help"])}</div>
+<form method="post" action="/admin/generate-master" enctype="multipart/form-data" onsubmit="return confirm({repr(t["master_warning"])});">
+<input type="hidden" name="lang" value="{lang}">
+<div class="upload-box">
+<input type="file" name="publisher_files" accept=".xlsx,.xls" multiple required>
+</div>
+<div style="margin-top:12px;">
+<button class="primary" type="submit">{esc(t["publish_master"])}</button>
+</div>
+</form>
+</div>
+
+<div class="card" style="border:1px solid #f1c7c7;">
+<div class="toolbar" style="margin-bottom:0;">
+<div>
+<h2 style="margin:0 0 5px;">{esc(t["new_cycle"])}</h2>
+<div class="small">{esc(t["new_cycle_help"])}</div>
+</div>
+<form method="post" action="/admin/reset-selections" onsubmit="return confirm({repr(t["cycle_warning"])});">
+<input type="hidden" name="lang" value="{lang}">
+<button class="danger" type="submit">{esc(t["reset_cycle"])}</button>
+</form>
+</div>
 </div>
 
 <div class="admin-kpis">
@@ -2572,19 +2997,36 @@ def admin_dashboard(
 </div>
 </div>
 
-<a href="{export_url}">
-<button class="primary">
-{esc(t["export_final"])}
-</button>
-</a>
+<div style="display:flex;gap:8px;flex-wrap:wrap;">
+<a href="{export_url}"><button class="primary">{esc(t["export_final"])}</button></a>
+<a href="{publisher_orders_url}"><button class="warning">{esc(t["generate_publisher_orders"])}</button></a>
+</div>
 
 </div>
+
+<form method="post" action="/admin/bulk-decision" id="bulkDecisionForm">
+<input type="hidden" name="lang" value="{lang}">
+<div class="toolbar" style="margin:14px 0;justify-content:flex-start;">
+<div><label class="small"><strong>{esc(t["bulk_default_qty"])}</strong></label><br>
+<input type="number" name="final_quantity" value="1" min="1" style="width:110px;"></div>
+<button type="button" class="secondary" onclick="selectPending()">{esc(t["select_all_pending"])}</button>
+<button type="button" class="secondary" onclick="clearBulk()">{esc(t["clear_selected"])}</button>
+<button type="submit" name="decision" value="Approved" class="primary" onclick="return validateBulk();">{esc(t["approve_selected"])}</button>
+<button type="submit" name="decision" value="Rejected" class="danger" onclick="return validateBulk();">{esc(t["reject_selected"])}</button>
+</div>
+</form>
+<script>
+function selectPending() {{ document.querySelectorAll('.bulk-book').forEach(function(cb) {{ cb.checked = (cb.dataset.status || '').toLowerCase() === 'pending'; }}); }}
+function clearBulk() {{ document.querySelectorAll('.bulk-book').forEach(function(cb) {{ cb.checked = false; }}); }}
+function validateBulk() {{ var checked = document.querySelectorAll('.bulk-book:checked').length; if (!checked) {{ alert({repr(t["select_books_first"])}); return false; }} return true; }}
+</script>
 
 <div class="table-wrap">
 <table>
 
 <thead>
 <tr>
+<th style="width:48px;">✓</th>
 <th>{esc(t["title"])}</th>
 <th>{esc(t["author"])}</th>
 <th>{esc(t["publisher"])}</th>
@@ -2624,6 +3066,7 @@ def admin_dashboard(
 <th>{esc(t["department"])}</th>
 <th>{esc(t["email"])}</th>
 <th>{esc(t["books"])}</th>
+<th>{esc(t["selected_titles"])}</th>
 <th>{esc(t["submitted_at"])}</th>
 <th>{esc(t["status"])}</th>
 </tr>
@@ -2690,6 +3133,586 @@ def admin_dashboard(
             admin=True,
         )
 
+    finally:
+        db.close()
+
+
+# =========================================================
+# ADMIN — MULTI PUBLISHER FILES -> MASTER -> PUBLISH
+# =========================================================
+
+@app.post("/admin/generate-master", response_class=HTMLResponse)
+async def generate_and_publish_master(request: Request):
+    lang = lang_of(request)
+    admin_user, redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    form = await request.form()
+    lang, t = lang_pack(str(form.get("lang", lang)))
+    uploads = form.getlist("publisher_files")
+
+    uploads = [
+        item for item in uploads
+        if getattr(item, "filename", "")
+    ]
+
+    if not uploads:
+        return HTMLResponse(
+            page_template(
+                f'<div class="card">{esc(t["master_upload_error"])}</div>',
+                lang=lang,
+                admin=True,
+            ),
+            status_code=400,
+        )
+
+    aliases = {
+        "Title": [
+            "Title", "Book Title", "Book Name",
+            "العنوان", "عنوان", "عنوان الكتاب", "اسم الكتاب", "اسم الكتاب / العنوان",
+            "عنوان المؤلف", "الكتاب", "الكتب", "اسم المؤلف / الكتاب"
+        ],
+        "Author": [
+            "Author", "Authors", "Author Name",
+            "المؤلف", "المؤلفون", "اسم المؤلف", "اسم المؤلفين", "المؤلف / المحقق",
+            "المؤلف/المحقق", "المؤلف والمحقق", "المؤلف/المترجم", "المؤلف / المترجم"
+        ],
+        "Publisher": [
+            "Publisher", "Publishing House",
+            "الناشر", "دار النشر", "جهة النشر", "اسم الناشر", "دار النشر / الناشر"
+        ],
+        "Publication Year": [
+            "Publication Year", "Year", "Pub Year", "Publishing Year",
+            "سنة النشر", "عام النشر", "السنة", "تاريخ النشر", "سنه النشر",
+            "سنة الاصدار", "سنة الإصدار", "عام الاصدار", "عام الإصدار"
+        ],
+        "ISBN": [
+            "ISBN", "ISBN-13", "ISBN13", "ISBN 13",
+            "ردمك", "الرقم الدولي", "الرقم الدولي للكتاب", "الترقيم الدولي للكتاب",
+            "الرقم الدولى", "الرقم الدولى للكتاب", "رقم دولي", "رقم دولى"
+        ],
+        "Price": [
+            "Price", "Unit Price", "AED Price", "Price AED", "Dollar Price",
+            "السعر", "سعر", "السعر بالدرهم", "سعر بالدرهم", "درهم", "السعر درهم",
+            "السعر بالدولار", "سعر بالدولار", "دولار", "السعر دولار", "price usd", "price aed"
+        ],
+        "Currency": [
+            "Currency", "العملة", "نوع العملة"
+        ],
+        "Subject": [
+            "Subject", "Subjects", "Category", "Specialization",
+            "الموضوع", "الموضوعات", "التخصص", "التصنيف", "القسم", "المجال",
+            "التخصص العام", "التخصص الدقيق"
+        ],
+        "Language": [
+            "Language", "Book Language", "اللغة", "لغة الكتاب"
+        ],
+        "Vendor": [
+            "Vendor", "Supplier", "Bookseller",
+            "المورد", "اسم المورد"
+        ],
+    }
+
+    all_records = []
+    mapping_rows = []
+    skipped = []
+    source_rows = 0
+    processed_files = 0
+
+    for upload in uploads:
+        filename = getattr(upload, "filename", "") or ""
+        extension = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+
+        if extension not in {"xlsx", "xls"}:
+            skipped.append({"File": filename, "Reason": "Unsupported file type"})
+            continue
+
+        try:
+            raw = await upload.read()
+            engine = "openpyxl" if extension == "xlsx" else "xlrd"
+            excel_file = pd.ExcelFile(io.BytesIO(raw), engine=engine)
+            source_publisher = publisher_from_filename(filename)
+            file_had_records = False
+
+            for sheet_name in excel_file.sheet_names:
+                try:
+                    header_row, header_score = detect_header_row(
+                        raw,
+                        sheet_name,
+                        engine,
+                        aliases,
+                        max_rows=15,
+                    )
+
+                    # Notes/summary/instruction sheets are ignored unless they
+                    # clearly contain a real bibliographic table.
+                    if is_non_catalogue_sheet(sheet_name) and header_score < 3:
+                        skipped.append({
+                            "File": filename,
+                            "Reason": (
+                                f"Ignored non-catalogue sheet {sheet_name}; "
+                                f"bibliographic header score={header_score}"
+                            ),
+                        })
+                        continue
+
+                    df = pd.read_excel(
+                        io.BytesIO(raw),
+                        sheet_name=sheet_name,
+                        engine=engine,
+                        dtype=object,
+                        header=header_row,
+                    )
+                except Exception as error:
+                    skipped.append({
+                        "File": filename,
+                        "Reason": f"Sheet {sheet_name}: {error}",
+                    })
+                    continue
+
+                if df.empty:
+                    continue
+
+                cols = map_columns_safely(df, aliases)
+                cols = infer_columns_from_data(df, cols)
+
+                recovery_method = "Exact header mapping"
+
+                if not cols["Title"]:
+                    fallback_title = (
+                        None
+                        if is_non_catalogue_sheet(sheet_name)
+                        else choose_title_fallback(df, cols)
+                    )
+                    if fallback_title is not None:
+                        cols["Title"] = fallback_title
+                        recovery_method = "Data-assisted title recovery"
+                    else:
+                        skipped.append({
+                            "File": filename,
+                            "Reason": (
+                                f"No safe Title column found in sheet {sheet_name}; "
+                                f"best header row={header_row + 1}, header score={header_score}"
+                            ),
+                        })
+                        continue
+
+                mapping_rows.append({
+                    "Source File": filename,
+                    "Source Sheet": sheet_name,
+                    "Detected Header Row": header_row + 1,
+                    "Header Match Score": header_score,
+                    "Recovery Method": recovery_method,
+                    **{
+                        f"{standard} Column": cols.get(standard) or ""
+                        for standard in aliases
+                    },
+                })
+
+                for _, row in df.iterrows():
+                    def get_value(standard):
+                        col = cols.get(standard)
+                        if not col:
+                            return None
+                        value = row.get(col)
+                        if pd.isna(value):
+                            return None
+                        value = str(value).strip()
+                        return value if value else None
+
+                    title = get_value("Title")
+                    author = get_value("Author")
+                    isbn = valid_isbn(get_value("ISBN"))
+
+                    # Ignore blank/non-bibliographic rows.
+                    if not title and not author and not isbn:
+                        continue
+                    if not title:
+                        continue
+
+                    source_rows += 1
+                    file_had_records = True
+
+                    publisher = get_value("Publisher") or source_publisher
+                    vendor = get_value("Vendor") or source_publisher
+
+                    price_number = valid_price(get_value("Price"))
+
+                    language = get_value("Language")
+                    if not language:
+                        sample = " ".join(
+                            str(v or "")
+                            for v in [title, author, get_value("Subject")]
+                        )
+                        language = (
+                            "Arabic"
+                            if any("\u0600" <= ch <= "\u06FF" for ch in sample)
+                            else "English"
+                        )
+
+                    currency = get_value("Currency")
+                    if not currency and price_number is not None:
+                        price_header = str(cols.get("Price") or "").lower()
+                        if "دولار" in price_header or "dollar" in price_header or "usd" in price_header:
+                            currency = "USD"
+                        else:
+                            currency = "AED"
+
+                    all_records.append({
+                        "Title": title,
+                        "Author": author,
+                        "Publisher": publisher,
+                        "Source Publisher": source_publisher,
+                        "Publication Year": valid_year(get_value("Publication Year")),
+                        "ISBN": isbn,
+                        "Price": price_number,
+                        "Currency": currency,
+                        "Subject": get_value("Subject"),
+                        "Language": language,
+                        "Vendor": vendor,
+                        "Source File": filename,
+                        "Source Sheet": sheet_name,
+                        "Validation Status": "; ".join(
+                            issue for issue in [
+                                "Missing Author" if not author else "",
+                                "Missing Year" if not valid_year(get_value("Publication Year")) else "",
+                                "Missing ISBN" if not isbn else "",
+                                "Missing Price" if price_number is None else "",
+                                "Missing Subject" if not get_value("Subject") else "",
+                            ]
+                            if issue
+                        ) or "OK",
+                    })
+
+            if file_had_records:
+                processed_files += 1
+
+        except Exception as error:
+            skipped.append({"File": filename, "Reason": str(error)})
+
+    if not all_records:
+        return HTMLResponse(
+            page_template(
+                f"""
+<div class="card">
+<h2>{esc(t["master_upload_error"])}</h2>
+<p>No bibliographic records could be extracted from the uploaded files.</p>
+</div>
+""",
+                lang=lang,
+                admin=True,
+            ),
+            status_code=400,
+        )
+
+    # Consolidate true duplicates. Prefer the more complete version of a record.
+    unique = {}
+    duplicate_count = 0
+
+    for record in all_records:
+        key = book_dedupe_key(record)
+
+        if key not in unique:
+            unique[key] = record
+            continue
+
+        duplicate_count += 1
+        existing = unique[key]
+
+        for field, value in record.items():
+            if existing.get(field) in (None, "") and value not in (None, ""):
+                existing[field] = value
+
+    master_records = list(unique.values())
+    master_df = pd.DataFrame(master_records)
+
+    preferred_columns = [
+        "Title",
+        "Author",
+        "Publisher",
+        "Source Publisher",
+        "Publication Year",
+        "ISBN",
+        "Price",
+        "Currency",
+        "Subject",
+        "Language",
+        "Vendor",
+        "Source File",
+        "Source Sheet",
+        "Validation Status",
+    ]
+    master_df = master_df[
+        [c for c in preferred_columns if c in master_df.columns]
+    ]
+
+    # Generate the downloadable master workbook on disk.
+    generated_dir = Path("generated")
+    generated_dir.mkdir(exist_ok=True)
+    generated_path = generated_dir / "AcquiAI_Master_Acquisition.xlsx"
+
+    with pd.ExcelWriter(generated_path, engine="openpyxl") as writer:
+        master_df.to_excel(
+            writer,
+            index=False,
+            sheet_name="Master Acquisition",
+        )
+
+        publisher_summary = (
+            master_df.groupby("Source Publisher", dropna=False)
+            .agg(
+                Titles=("Title", "count"),
+                Total_Value=("Price", "sum"),
+            )
+            .reset_index()
+        )
+        publisher_summary.to_excel(
+            writer,
+            index=False,
+            sheet_name="Publisher Summary",
+        )
+
+        if mapping_rows:
+            pd.DataFrame(mapping_rows).to_excel(
+                writer,
+                index=False,
+                sheet_name="Mapping Report",
+            )
+
+        if skipped:
+            pd.DataFrame(skipped).to_excel(
+                writer,
+                index=False,
+                sheet_name="Skipped Files",
+            )
+
+        for sheet_name in writer.book.sheetnames:
+            ws = writer.book[sheet_name]
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+            for column_cells in ws.columns:
+                max_length = max(
+                    (
+                        len(str(cell.value))
+                        if cell.value is not None
+                        else 0
+                    )
+                    for cell in column_cells
+                )
+                ws.column_dimensions[
+                    column_cells[0].column_letter
+                ].width = min(max_length + 2, 50)
+
+    # Publish the generated master directly to the portal database.
+    db = SessionLocal()
+
+    try:
+        db.query(SelectionItem).delete(synchronize_session=False)
+        db.query(SelectionCart).delete(synchronize_session=False)
+        db.query(Selector).delete(synchronize_session=False)
+        db.query(Book).delete(synchronize_session=False)
+
+        for record in master_records:
+            db.add(
+                Book(
+                    title=record.get("Title"),
+                    author=record.get("Author"),
+                    publisher=record.get("Publisher"),
+                    source_publisher=record.get("Source Publisher"),
+                    publication_year=record.get("Publication Year"),
+                    isbn=record.get("ISBN"),
+                    price=record.get("Price"),
+                    currency=record.get("Currency"),
+                    subject=record.get("Subject"),
+                    language=record.get("Language"),
+                )
+            )
+
+        db.commit()
+
+    except Exception as error:
+        db.rollback()
+        return HTMLResponse(
+            page_template(
+                f"""
+<div class="card">
+<h2>{esc(t["master_upload_error"])}</h2>
+<p>{esc(error)}</p>
+</div>
+""",
+                lang=lang,
+                admin=True,
+            ),
+            status_code=500,
+        )
+    finally:
+        db.close()
+
+    skipped_count = len(skipped)
+
+    return HTMLResponse(
+        page_template(
+            f"""
+<div class="card success">
+<div class="success-icon">✓</div>
+<h1>{esc(t["master_import_done"])}</h1>
+<p>{esc(t["published_to_users"])}</p>
+<p class="small"><strong>✓</strong> {esc(t["mapping_fixed"])}</p>
+
+<div class="stats" style="grid-template-columns:repeat(4,1fr);max-width:1000px;margin:24px auto;">
+<div class="stat">
+<span class="stat-label">{esc(t["files_processed"])}</span>
+<span class="stat-value">{processed_files}</span>
+</div>
+<div class="stat">
+<span class="stat-label">{esc(t["source_rows"])}</span>
+<span class="stat-value">{source_rows}</span>
+</div>
+<div class="stat">
+<span class="stat-label">{esc(t["unique_titles"])}</span>
+<span class="stat-value">{len(master_records)}</span>
+</div>
+<div class="stat">
+<span class="stat-label">{esc(t["duplicates_removed"])}</span>
+<span class="stat-value">{duplicate_count}</span>
+</div>
+</div>
+
+<p>{esc(t["skipped_files"])}: <strong>{skipped_count}</strong></p>
+
+<a href="{build_url("/admin/download-generated-master", lang)}">
+<button class="warning">{esc(t["download_generated_master"])}</button>
+</a>
+
+<a href="{build_url("/catalogue", lang)}">
+<button class="primary">{esc(t["portal"])}</button>
+</a>
+
+<a href="{build_url("/admin", lang)}">
+<button class="secondary">{esc(t["return_admin"])}</button>
+</a>
+</div>
+""",
+            t["master_import_done"],
+            lang=lang,
+            admin=True,
+        )
+    )
+
+
+@app.get("/admin/download-generated-master")
+def download_generated_master(request: Request, lang: str = "en"):
+    admin_user, redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    path = Path("generated") / "AcquiAI_Master_Acquisition.xlsx"
+
+    if not path.exists():
+        lang, t = lang_pack(lang)
+        return HTMLResponse(
+            page_template(
+                f'<div class="card">{esc(t["master_upload_error"])}</div>',
+                lang=lang,
+                admin=True,
+            ),
+            status_code=404,
+        )
+
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        path=str(path),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="AcquiAI_Master_Acquisition.xlsx",
+    )
+
+# =========================================================
+# ADMIN — START NEW SELECTION CYCLE
+# =========================================================
+
+@app.post("/admin/reset-selections")
+async def reset_selections(request: Request):
+    lang = lang_of(request)
+    admin_user, redirect = require_admin(request)
+    if redirect:
+        return redirect
+
+    db = SessionLocal()
+    try:
+        # Delete only selection-cycle data. Keep Book catalogue and Supabase users.
+        db.query(SelectionItem).delete(synchronize_session=False)
+        db.query(SelectionCart).delete(synchronize_session=False)
+        db.query(Selector).delete(synchronize_session=False)
+        db.commit()
+        message = tr(
+            lang,
+            "All previous carts, selections and admin decisions were cleared. The catalogue and Supabase user accounts were kept.",
+            "تم حذف جميع السلال والاختيارات وقرارات المسؤول السابقة. تم الاحتفاظ بالفهرس وحسابات المستخدمين في Supabase.",
+        )
+        return simple_page(
+            tr(lang, "New Selection Cycle", "دورة اختيار جديدة"),
+            '<div class="card"><h2>' + esc(tr(lang, "New selection cycle started successfully.", "تم بدء دورة اختيار جديدة بنجاح.")) + '</h2>'
+            + '<p>' + esc(message) + '</p>'
+            + '<a class="btn" href="/admin?lang=' + lang + '">' + esc(tr(lang, "Return to Admin Dashboard", "العودة إلى لوحة تحكم المسؤول")) + '</a></div>',
+            lang,
+            user=admin_user,
+        )
+    except Exception as error:
+        db.rollback()
+        return simple_page(
+            tr(lang, "Unable to Start New Cycle", "تعذر بدء دورة جديدة"),
+            '<div class="card"><div class="error">' + esc(error) + '</div></div>',
+            lang,
+            user=admin_user,
+        )
+    finally:
+        db.close()
+
+
+def safe_filename(value):
+    value = str(value or "Unknown Publisher").strip()
+    value = re.sub(r'[\\/:*?"<>|]+', '_', value)
+    value = re.sub(r'\s+', ' ', value).strip(' ._')
+    return value[:120] or "Unknown Publisher"
+
+
+# =========================================================
+# ADMIN — BULK APPROVE / REJECT UNIQUE TITLES
+# =========================================================
+
+@app.post("/admin/bulk-decision")
+async def admin_bulk_decision(request: Request):
+    lang = lang_of(request)
+    admin_user, redirect = require_admin(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    decision = str(form.get("decision", "")).strip()
+    book_ids = []
+    for raw_id in form.getlist("book_ids"):
+        try:
+            book_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            pass
+    if decision not in {"Approved", "Rejected"} or not book_ids:
+        return RedirectResponse(url=build_url("/admin", lang), status_code=303)
+    try:
+        final_quantity = max(1, int(str(form.get("final_quantity", "1")).strip() or "1"))
+    except Exception:
+        final_quantity = 1
+    db = SessionLocal()
+    try:
+        items = db.query(SelectionItem).filter(SelectionItem.book_id.in_(book_ids)).all()
+        for item in items:
+            item.admin_status = decision
+            item.admin_approved_quantity = final_quantity if decision == "Approved" else 0
+        db.commit()
+        return RedirectResponse(url=build_url("/admin", lang), status_code=303)
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -2984,6 +4007,70 @@ def export_final_approved(
 
 
 # =========================================================
+# EXPORT SEPARATE PUBLISHER / VENDOR ORDERS AS ZIP
+# =========================================================
+
+@app.get("/admin/export-publisher-orders")
+def export_publisher_orders(request: Request, lang: str = "en"):
+    lang, t = lang_pack(lang)
+    admin_user, redirect = require_admin(request)
+    if redirect:
+        return redirect
+    db = SessionLocal()
+    try:
+        approved_book_ids = [r[0] for r in db.query(SelectionItem.book_id).filter(SelectionItem.admin_status == "Approved").distinct().all()]
+        if not approved_book_ids:
+            return HTMLResponse(page_template(f'<div class="card success"><h2>{esc(t["no_approved_export_title"])}</h2><p>{esc(t["no_approved_export_text"])}</p><a href="{build_url("/admin", lang)}"><button class="primary">{esc(t["return_admin"])}</button></a></div>', lang=lang, admin=True), status_code=404)
+        books = db.query(Book).filter(Book.id.in_(approved_book_ids)).all()
+        records = []
+        for book in books:
+            approved_items = db.query(SelectionItem).filter(SelectionItem.book_id == book.id, SelectionItem.admin_status == "Approved").all()
+            final_qty = max([item.admin_approved_quantity or 0 for item in approved_items] or [0])
+            if final_qty <= 0:
+                continue
+            all_items = db.query(SelectionItem).filter(SelectionItem.book_id == book.id).all()
+            selector_ids = {item.cart.selector_id for item in all_items if item.cart}
+            unit_price = float(book.price) if book.price is not None else None
+            line_total = unit_price * final_qty if unit_price is not None else None
+            vendor = book.source_publisher or book.publisher or getattr(book, "vendor", None) or "Unknown Publisher"
+            records.append({"Title": book.title, "Author": book.author, "Publication Year": book.publication_year, "ISBN": book.isbn, "Publisher": book.publisher, "Source Publisher / Vendor": vendor, "Price": unit_price, "Currency": book.currency, "Subject": book.subject, "Language": book.language, "Requested By Users": len(selector_ids), "Final Approved Quantity": final_qty, "Estimated Line Total": line_total})
+        if not records:
+            return HTMLResponse(page_template(f'<div class="card success"><h2>{esc(t["no_approved_export_title"])}</h2><p>{esc(t["no_approved_export_text"])}</p></div>', lang=lang, admin=True), status_code=404)
+        df = pd.DataFrame(records)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for vendor, vendor_df in df.groupby("Source Publisher / Vendor", dropna=False):
+                vendor_name = str(vendor) if pd.notna(vendor) and str(vendor).strip() else "Unknown Publisher"
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                    vendor_df.to_excel(writer, index=False, sheet_name="Purchase Order")
+                    pd.DataFrame([{"Publisher / Vendor": vendor_name, "Unique Titles": len(vendor_df), "Total Quantity": int(vendor_df["Final Approved Quantity"].sum()), "Estimated Value": vendor_df["Estimated Line Total"].fillna(0).sum()}]).to_excel(writer, index=False, sheet_name="Summary")
+                    for sheet_name in writer.book.sheetnames:
+                        ws = writer.book[sheet_name]; ws.freeze_panes = "A2"; ws.auto_filter.ref = ws.dimensions
+                        for column_cells in ws.columns:
+                            max_length = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column_cells)
+                            ws.column_dimensions[column_cells[0].column_letter].width = min(max_length + 2, 50)
+                excel_buffer.seek(0)
+                zip_file.writestr(f"{safe_filename(vendor_name)}_Purchase_Order.xlsx", excel_buffer.getvalue())
+            master_buffer = io.BytesIO()
+            with pd.ExcelWriter(master_buffer, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="Final Purchase Master")
+                summary = df.groupby("Source Publisher / Vendor", dropna=False).agg(Unique_Titles=("Title", "count"), Total_Quantity=("Final Approved Quantity", "sum"), Estimated_Value=("Estimated Line Total", "sum")).reset_index()
+                summary.to_excel(writer, index=False, sheet_name="Publisher Summary")
+                for sheet_name in writer.book.sheetnames:
+                    ws = writer.book[sheet_name]; ws.freeze_panes = "A2"; ws.auto_filter.ref = ws.dimensions
+                    for column_cells in ws.columns:
+                        max_length = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column_cells)
+                        ws.column_dimensions[column_cells[0].column_letter].width = min(max_length + 2, 50)
+            master_buffer.seek(0)
+            zip_file.writestr("AcquiAI_Final_Purchase_Master.xlsx", master_buffer.getvalue())
+        zip_buffer.seek(0)
+        return StreamingResponse(zip_buffer, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="AcquiAI_Publisher_Orders.zip"'})
+    finally:
+        db.close()
+
+
+# =========================================================
 # HEALTH CHECK
 # =========================================================
 
@@ -2995,7 +4082,7 @@ def health():
         return {
             "status": "ok",
             "application": "AcquiAI",
-            "version": "4.1.1",
+            "version": "4.2.0",
             "page_size": PAGE_SIZE,
             "books": db.query(Book).count(),
             "submitted_carts": (
