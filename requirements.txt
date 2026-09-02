@@ -7,3 +7,4 @@ xlrd
 python-multipart
 supabase
 python-dotenv
+itsdangerous
