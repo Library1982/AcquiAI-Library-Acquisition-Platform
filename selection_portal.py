@@ -1292,7 +1292,7 @@ def build_url(path, lang="en", **params):
     return path + "?" + urlencode(values)
 
 
-def page_template(content, title="AcquiAI", lang="en", admin=False):
+def page_template(content, title="AcquiAI", lang="en", admin=False, show_admin_link=False):
     lang, t = lang_pack(lang)
 
     direction = "rtl" if lang == "ar" else "ltr"
@@ -1829,7 +1829,7 @@ tr:hover td {{
 
 <div class="nav">
     <a href="{portal_url}" class="nav-link">{esc(t["portal"])}</a>
-    {f'<a href="{admin_url}" class="nav-link">{esc(t["admin"])}</a>' if admin else ""}
+    {f'<a href="{admin_url}" class="nav-link">{esc(t["admin"])}</a>' if admin or show_admin_link else ""}
     <a href="/logout" class="nav-link">{esc("تسجيل الخروج" if lang == "ar" else "Sign Out")}</a>
     <a href="{switch_url}" class="nav-link lang-link">{esc(t["language_button"])}</a>
     {admin_badge}
@@ -2352,6 +2352,7 @@ function validateSelection() {{
             content,
             t["catalogue_title"],
             lang=lang,
+            show_admin_link=current_user.get("role") == "admin",
         )
 
     finally:
@@ -2466,7 +2467,7 @@ async def submit_selection(request: Request):
 
         db.commit()
 
-        return_url = build_url("/", lang)
+        return_url = build_url("/catalogue", lang)
 
         content = f"""
 <div class="card success">
@@ -2512,6 +2513,7 @@ async def submit_selection(request: Request):
             content,
             t["selection_submitted"],
             lang=lang,
+            show_admin_link=current_user.get("role") == "admin",
         )
 
     except Exception as error:
