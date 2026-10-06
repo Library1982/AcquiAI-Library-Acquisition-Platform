@@ -2069,7 +2069,7 @@ def selection_page(
         if page > 1:
             params = dict(base_params)
             params["page"] = page - 1
-            url = build_url("/", lang, **params)
+            url = build_url("/catalogue", lang, **params)
 
             pagination_html += f"""
 <a href="{url}">
@@ -2083,7 +2083,7 @@ def selection_page(
         for page_number in range(start_page, end_page + 1):
             params = dict(base_params)
             params["page"] = page_number
-            url = build_url("/", lang, **params)
+            url = build_url("/catalogue", lang, **params)
 
             button_class = (
                 "primary"
@@ -2100,7 +2100,7 @@ def selection_page(
         if page < total_pages:
             params = dict(base_params)
             params["page"] = page + 1
-            url = build_url("/", lang, **params)
+            url = build_url("/catalogue", lang, **params)
 
             pagination_html += f"""
 <a href="{url}">
