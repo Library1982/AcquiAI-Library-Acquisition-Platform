@@ -1016,7 +1016,7 @@ def normalize_colname(value):
     """
     value = str(value or "").strip().lower()
     value = value.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
-    value = value.replace("ى", "ي")
+    value = value.replace("ى", "ي").replace("ـ", "")
     value = re.sub(r"[\u064B-\u065F\u0670]", "", value)  # Arabic diacritics
     value = re.sub(r"[\W_]+", "", value, flags=re.UNICODE)
     return value
@@ -1074,7 +1074,9 @@ def map_columns_safely(df, aliases):
 def valid_year(value):
     if value in (None, ""):
         return None
-    match = re.search(r"\b(18|19|20|21)\d{2}\b", str(value))
+    # Normalize digit shapes only; the year must still occur in the mapped source cell.
+    source_text = str(value).translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
+    match = re.search(r"\b(18|19|20|21)\d{2}\b", source_text)
     return match.group(0) if match else None
 
 
@@ -1198,22 +1200,8 @@ def infer_columns_from_data(df, current):
             result["ISBN"] = best
             used.add(best)
 
-    # Publication year: strong 4-digit year signature.
-    if not result.get("Publication Year"):
-        best = None
-        best_ratio = 0
-        for col in df.columns:
-            if col in used:
-                continue
-            vals = sample_values(col)
-            if not vals:
-                continue
-            ratio = sum(valid_year(v) is not None for v in vals) / len(vals)
-            if ratio >= 0.60 and ratio > best_ratio:
-                best, best_ratio = col, ratio
-        if best is not None:
-            result["Publication Year"] = best
-            used.add(best)
+    # Publication year is mapped from explicit source headers only.
+    # Never infer it from unrelated numeric, price or ISBN columns.
 
     # Price: numeric values in a plausible book-price range, excluding year/ISBN columns.
     if not result.get("Price"):
@@ -3169,7 +3157,7 @@ async def generate_and_publish_master(request: Request):
 
     aliases = {
         "Title": [
-            "Title", "Book Title", "Book Name",
+            "Title", "Titles", "Book Title", "Book Name",
             "العنوان", "عنوان", "عنوان الكتاب", "اسم الكتاب", "اسم الكتاب / العنوان",
             "عنوان المؤلف", "الكتاب", "الكتب", "اسم المؤلف / الكتاب"
         ],
@@ -3184,6 +3172,7 @@ async def generate_and_publish_master(request: Request):
         ],
         "Publication Year": [
             "Publication Year", "Year", "Pub Year", "Publishing Year",
+            "Date", "Publication Date", "Publishing Date", "Pub Date",
             "سنة النشر", "عام النشر", "السنة", "تاريخ النشر", "سنه النشر",
             "سنة الاصدار", "سنة الإصدار", "عام الاصدار", "عام الإصدار"
         ],
