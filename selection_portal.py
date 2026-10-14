@@ -1276,32 +1276,18 @@ def publisher_from_filename(filename):
 
 
 
-def publisher_template_frames(records):
-    """Export source fields using the agreed vendor template; no inferred defaults."""
-    layouts = {
-        "English Books": [
-            ("Title", "Title"), ("Author", "Author"), ("Price", "PRICE"),
-            ("Publisher", "Publisher"), ("Publication Year", "Publication Year"),
-            ("Subject", "Subject"), ("Language", "Language"), ("Currency", "Currency"),
-        ],
-        "Arabic Books": [
-            ("Title", "عنوان الكتاب"), ("Author", "المؤلف"), ("Price", " السعر"),
-            ("Publisher", "الناشر"), ("Publication Year", "سنة النشر"),
-            ("Subject", "الموضوع"), ("Subsubject", "الموضوع الفرعي"),
-            ("Language", "اللغة"), ("Notes", "ملاحظات"),
-        ],
-    }
-    frames = {}
-    for sheet_name, layout in layouts.items():
-        target = "Arabic" if sheet_name == "Arabic Books" else "English"
-        rows = []
-        for record in records:
-            source = record.get("Template Values", {})
-            if source.get("Template Language") != target:
-                continue
-            rows.append({header: source.get(field) for field, header in layout})
-        frames[sheet_name] = pd.DataFrame(rows, columns=[header for _, header in layout])
-    return frames
+def catalogue_language(value, title="", author=""):
+    key = normalize_colname(value)
+    if key in ("ar", "ara", "arabic", "العربية", "عربي", "عربية"):
+        return "Arabic"
+    if key in ("en", "eng", "english", "الانجليزية", "انجليزي", "انجليزية"):
+        return "English"
+    if key in ("bilingual", "ثنائياللغة"):
+        return "Bilingual"
+    if value and str(value).strip():
+        return str(value).strip()
+    return "Arabic" if any("\u0600" <= ch <= "\u06FF" for ch in str(title)) else "English"
+
 
 def book_dedupe_key(record):
     isbn = re.sub(r"[^0-9Xx]", "", str(record.get("ISBN") or ""))
@@ -3362,24 +3348,15 @@ async def generate_and_publish_master(request: Request):
 
                     price_number = valid_price(get_value("Price"))
 
-                    language = get_value("Language")
-                    if not language:
-                        sample = " ".join(
-                            str(v or "")
-                            for v in [title, author, get_value("Subject")]
-                        )
-                        language = (
-                            "Arabic"
-                            if any("\u0600" <= ch <= "\u06FF" for ch in sample)
-                            else "English"
-                        )
+                    # Language comes from the row, never the worksheet name.
+                    language = catalogue_language(get_value("Language"), title, author)
 
                     currency = get_value("Currency")
                     if not currency and price_number is not None:
                         price_header = str(cols.get("Price") or "").lower()
                         if "دولار" in price_header or "dollar" in price_header or "usd" in price_header:
                             currency = "USD"
-                        else:
+                        elif "درهم" in price_header or "aed" in price_header:
                             currency = "AED"
 
                     # Keep source values separately from normalized catalogue defaults.
@@ -3497,8 +3474,6 @@ async def generate_and_publish_master(request: Request):
     generated_path = generated_dir / "AcquiAI_Master_Acquisition.xlsx"
 
     with pd.ExcelWriter(generated_path, engine="openpyxl") as writer:
-        for template_sheet, template_df in publisher_template_frames(master_records).items():
-            template_df.to_excel(writer, index=False, sheet_name=template_sheet)
         master_df.to_excel(
             writer,
             index=False,
