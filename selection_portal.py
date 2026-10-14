@@ -805,7 +805,7 @@ TEXT = {
         "upload_master_help": "Select multiple publisher/vendor Excel files. AcquiAI combines them into one standardized master catalogue and publishes it to users.",
         "choose_master": "Choose Publisher / Vendor Excel Files",
         "publish_master": "Generate & Publish Master Catalogue",
-        "master_warning": "AcquiAI will combine these publisher files into a new master catalogue and clear the current selection cycle. Continue?",
+        "master_warning": "AcquiAI will add or update books from these files. Existing books, carts, selections and users will be preserved. Continue?",
         "master_import_done": "New master catalogue published successfully.",
         "records_imported": "records imported",
         "files_processed": "Publisher Files Processed",
@@ -937,7 +937,7 @@ TEXT = {
         "upload_master_help": "اختر عدة ملفات Excel للناشرين أو الموردين. سيقوم AcquiAI بدمجها وتوحيدها في فهرس رئيسي واحد ثم نشره للمستخدمين.",
         "choose_master": "اختر ملفات Excel للناشرين / الموردين",
         "publish_master": "إنشاء ونشر الفهرس الرئيسي",
-        "master_warning": "سيقوم AcquiAI بدمج ملفات الناشرين في فهرس رئيسي جديد ومسح دورة الاختيار الحالية. هل تريد المتابعة؟",
+        "master_warning": "سيضيف AcquiAI الكتب أو يحدث بياناتها مع الاحتفاظ بالكتب والسلال والاختيارات والمستخدمين الحاليين. هل تريد المتابعة؟",
         "master_import_done": "تم نشر الفهرس الرئيسي الجديد بنجاح.",
         "records_imported": "سجلاً تم استيراده",
         "files_processed": "ملفات الناشرين التي تمت معالجتها",
@@ -1058,6 +1058,8 @@ def map_columns_safely(df, aliases):
         "Price",
         "Currency",
         "Subject",
+        "Subsubject",
+        "Notes",
         "Language",
         "Vendor",
     ]
@@ -1272,6 +1274,34 @@ def publisher_from_filename(filename):
     name = name.replace("_", " ").strip(" -_")
     return name or "Unknown Publisher"
 
+
+
+def publisher_template_frames(records):
+    """Export source fields using the agreed vendor template; no inferred defaults."""
+    layouts = {
+        "English Books": [
+            ("Title", "Title"), ("Author", "Author"), ("Price", "PRICE"),
+            ("Publisher", "Publisher"), ("Publication Year", "Publication Year"),
+            ("Subject", "Subject"), ("Language", "Language"), ("Currency", "Currency"),
+        ],
+        "Arabic Books": [
+            ("Title", "عنوان الكتاب"), ("Author", "المؤلف"), ("Price", " السعر"),
+            ("Publisher", "الناشر"), ("Publication Year", "سنة النشر"),
+            ("Subject", "الموضوع"), ("Subsubject", "الموضوع الفرعي"),
+            ("Language", "اللغة"), ("Notes", "ملاحظات"),
+        ],
+    }
+    frames = {}
+    for sheet_name, layout in layouts.items():
+        target = "Arabic" if sheet_name == "Arabic Books" else "English"
+        rows = []
+        for record in records:
+            source = record.get("Template Values", {})
+            if source.get("Template Language") != target:
+                continue
+            rows.append({header: source.get(field) for field, header in layout})
+        frames[sheet_name] = pd.DataFrame(rows, columns=[header for _, header in layout])
+    return frames
 
 def book_dedupe_key(record):
     isbn = re.sub(r"[^0-9Xx]", "", str(record.get("ISBN") or ""))
@@ -3159,7 +3189,7 @@ async def generate_and_publish_master(request: Request):
 
     aliases = {
         "Title": [
-            "Title", "Titles", "Book Title", "Book Name",
+            "Title", "Titles", "Book Title", "Book Name", "Name Of The Book",
             "العنوان", "عنوان", "عنوان الكتاب", "اسم الكتاب", "اسم الكتاب / العنوان",
             "عنوان المؤلف", "الكتاب", "الكتب", "اسم المؤلف / الكتاب"
         ],
@@ -3196,6 +3226,8 @@ async def generate_and_publish_master(request: Request):
             "الموضوع", "الموضوعات", "التخصص", "التصنيف", "القسم", "المجال",
             "التخصص العام", "التخصص الدقيق"
         ],
+        "Subsubject": ["Subsubject", "Sub Subject", "الموضوع الفرعي", "التخصص الفرعي"],
+        "Notes": ["Notes", "Remarks", "ملاحظات", "الملاحظات"],
         "Language": [
             "Language", "Book Language", "اللغة", "لغة الكتاب"
         ],
@@ -3350,7 +3382,24 @@ async def generate_and_publish_master(request: Request):
                         else:
                             currency = "AED"
 
+                    # Keep source values separately from normalized catalogue defaults.
+                    template_values = {
+                        field: get_value(field)
+                        for field in [
+                            "Title", "Author", "Publisher", "Publication Year",
+                            "Subject", "Subsubject", "Notes", "Language", "Currency"
+                        ]
+                    }
+                    template_values["Price"] = price_number
+                    template_values["Template Language"] = (
+                        "Arabic" if sheet_name == "Arabic Books"
+                        else "English" if sheet_name == "English Books"
+                        else "Arabic" if any("\u0600" <= ch <= "\u06FF" for ch in title)
+                        else "English"
+                    )
+
                     all_records.append({
+                        "Template Values": template_values,
                         "Title": title,
                         "Author": author,
                         "Publisher": publisher,
@@ -3360,6 +3409,8 @@ async def generate_and_publish_master(request: Request):
                         "Price": price_number,
                         "Currency": currency,
                         "Subject": get_value("Subject"),
+                        "Subsubject": get_value("Subsubject"),
+                        "Notes": get_value("Notes"),
                         "Language": language,
                         "Vendor": vendor,
                         "Source File": filename,
@@ -3428,6 +3479,8 @@ async def generate_and_publish_master(request: Request):
         "Price",
         "Currency",
         "Subject",
+        "Subsubject",
+        "Notes",
         "Language",
         "Vendor",
         "Source File",
@@ -3444,6 +3497,8 @@ async def generate_and_publish_master(request: Request):
     generated_path = generated_dir / "AcquiAI_Master_Acquisition.xlsx"
 
     with pd.ExcelWriter(generated_path, engine="openpyxl") as writer:
+        for template_sheet, template_df in publisher_template_frames(master_records).items():
+            template_df.to_excel(writer, index=False, sheet_name=template_sheet)
         master_df.to_excel(
             writer,
             index=False,
@@ -3499,26 +3554,32 @@ async def generate_and_publish_master(request: Request):
     db = SessionLocal()
 
     try:
-        db.query(SelectionItem).delete(synchronize_session=False)
-        db.query(SelectionCart).delete(synchronize_session=False)
-        db.query(Selector).delete(synchronize_session=False)
-        db.query(Book).delete(synchronize_session=False)
+        # Add/update books without changing IDs or touching users and selections.
+        fields = [
+            "Title", "Author", "Publisher", "Source Publisher", "Publication Year",
+            "ISBN", "Price", "Currency", "Subject", "Language"
+        ]
+        attributes = [
+            "title", "author", "publisher", "source_publisher", "publication_year",
+            "isbn", "price", "currency", "subject", "language"
+        ]
+        existing = {}
+        for book in db.query(Book).all():
+            values = {field: getattr(book, attr, None)
+                      for field, attr in zip(fields, attributes)}
+            existing.setdefault(book_dedupe_key(values), book)
 
         for record in master_records:
-            db.add(
-                Book(
-                    title=record.get("Title"),
-                    author=record.get("Author"),
-                    publisher=record.get("Publisher"),
-                    source_publisher=record.get("Source Publisher"),
-                    publication_year=record.get("Publication Year"),
-                    isbn=record.get("ISBN"),
-                    price=record.get("Price"),
-                    currency=record.get("Currency"),
-                    subject=record.get("Subject"),
-                    language=record.get("Language"),
-                )
-            )
+            key = book_dedupe_key(record)
+            book = existing.get(key)
+            if book is None:
+                book = Book()
+                db.add(book)
+                existing[key] = book
+            for field, attr in zip(fields, attributes):
+                value = record.get(field)
+                if value not in (None, ""):
+                    setattr(book, attr, value)
 
         db.commit()
 
