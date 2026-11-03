@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 from database import SessionLocal
 from models import Book, Selector, SelectionCart, SelectionItem
+from offline_selections import router as offline_selections_router
 
 import io
 import re
@@ -32,6 +33,8 @@ app.add_middleware(
     https_only=False,
 )
 
+
+app.include_router(offline_selections_router)
 
 PAGE_SIZE = 50
 
@@ -2935,6 +2938,21 @@ def admin_dashboard(
 <button class="primary" type="submit">{esc(t["publish_master"])}</button>
 </div>
 </form>
+</div>
+
+<div class="card">
+<h2>Manual Selected Books Upload / رفع اختيارات الكتب يدوياً</h2>
+<p class="small">Upload selected Excel or Word (.docx) files from users who did not use the online portal. Only marked selections are imported; uploaded books remain pending approval. / رفع ملفات الاختيارات من المستخدمين غير المشاركين في البوابة.</p>
+<form method="post" action="/admin/import-offline-selections" enctype="multipart/form-data">
+<label>Selector name / اسم القائم بالاختيار</label>
+<input name="selector_name" required placeholder="Name used when missing from file">
+<label>Department / القسم</label><input name="department" placeholder="Department">
+<label>Selected Excel / Word files</label>
+<input type="file" name="selection_files" accept=".xlsx,.xls,.docx" multiple required>
+<label><input type="checkbox" name="confirm_import" value="yes" style="width:auto"> Confirm Import / تأكيد الاستيراد (leave unchecked for preview)</label>
+<button class="primary" type="submit">Preview / Import Selections</button>
+</form>
+<p><a class="btn" href="/admin/export-selected-master?lang={lang}">Download Combined Selected Books Master (Arabic RTL) / تنزيل القائمة الموحدة</a></p>
 </div>
 
 <div class="card" style="border:1px solid #f1c7c7;">
